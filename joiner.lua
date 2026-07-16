@@ -1,5 +1,5 @@
 -- ============================================================
---              MM2 AUTO‑JOINER (Debug Teleport)
+--              MM2 AUTO‑JOINER (Debug + Embed Support)
 -- ============================================================
 
 if getgenv().__mm2_autojoiner_loaded then return end
@@ -227,6 +227,45 @@ function teleportTo(placeId, jobId, msgid)
     end)
 end
 
+-- ========== EMBED / CONTENT PARSING ==========
+local function extractJobIdFromMessage(msg)
+    local content = msg.content or ""
+    -- Try content first
+    local placeId, jobId = string.match(content, "(%d+),%s*'([^']+)'")
+    if not (placeId and jobId) then
+        placeId, jobId = string.match(content, 'TeleportToPlaceInstance%s*%(%s*"(%d+)"%s*,%s*"([^"]+)"')
+    end
+    if placeId and jobId then
+        return placeId, jobId
+    end
+
+    -- If not found, check embeds
+    if msg.embeds then
+        for _, embed in ipairs(msg.embeds) do
+            local desc = embed.description or ""
+            placeId, jobId = string.match(desc, "(%d+),%s*'([^']+)'")
+            if not (placeId and jobId) then
+                placeId, jobId = string.match(desc, 'TeleportToPlaceInstance%s*%(%s*"(%d+)"%s*,%s*"([^"]+)"')
+            end
+            if not (placeId and jobId) then
+                -- Also check fields
+                if embed.fields then
+                    for _, field in ipairs(embed.fields) do
+                        local val = field.value or ""
+                        placeId, jobId = string.match(val, "(%d+),%s*'([^']+)'")
+                        if not (placeId and jobId) then
+                            placeId, jobId = string.match(val, 'TeleportToPlaceInstance%s*%(%s*"(%d+)"%s*,%s*"([^"]+)"')
+                        end
+                        if placeId and jobId then break end
+                    end
+                end
+            end
+            if placeId and jobId then break end
+        end
+    end
+    return placeId, jobId
+end
+
 -- ========== PROCESS DISCORD MESSAGES ==========
 local function processJoinMessage(msg)
     if not msg or not msg.author then 
@@ -238,13 +277,15 @@ local function processJoinMessage(msg)
         return 
     end
     local content = msg.content or ""
-    print("[DEBUG] Processing message:", content)
-    local placeId, jobId = string.match(content, "(%d+),%s*'([^']+)'")
-    if not (placeId and jobId) then
-        placeId, jobId = string.match(content, 'TeleportToPlaceInstance%s*%(%s*"(%d+)"%s*,%s*"([^"]+)"')
+    print("[DEBUG] Processing message content:", content)
+    -- Check if this is an embed message without content
+    if content == "" and msg.embeds then
+        print("[DEBUG] Message has embeds, will parse those.")
     end
+
+    local placeId, jobId = extractJobIdFromMessage(msg)
     if not (placeId and jobId) then
-        print("[DEBUG] Could not parse placeId/jobId from:", content)
+        print("[DEBUG] Could not parse placeId/jobId from message or embeds.")
         return
     end
     print("[DEBUG] Parsed -> placeId:", placeId, "jobId:", jobId)
@@ -388,4 +429,4 @@ function connectgateway()
 end
 
 connectgateway()
-print("[MM2 Autojoiner] Debug version started. Watch console for logs.")
+print("[MM2 Autojoiner] Debug with embed support started.")
