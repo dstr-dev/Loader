@@ -1,5 +1,5 @@
 -- =====================================================================
--- 🩸 RAGE HUB | Murder Mystery 2 | PREMIUM FULL EDITION
+-- 🩸 DENTS HUB | Murder Mystery 2 | PREMIUM FULL EDITION
 -- =====================================================================
 
 local Players         = game:GetService("Players")
@@ -137,7 +137,7 @@ end
     task.spawn(function()
         local RunService = game:GetService("RunService")
         local fpsGui = Instance.new("ScreenGui")
-        fpsGui.Name = "RageFPS"
+        fpsGui.Name = "Dents"
         fpsGui.ResetOnSpawn = false
         local fpsLbl = Instance.new("TextLabel", fpsGui)
         fpsLbl.BackgroundTransparency = 1
