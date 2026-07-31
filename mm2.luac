@@ -1,1 +1,1 @@
-loadstring(game:HttpGet("https://codeberg.org/dstr-dev/Loader/raw/branch/main/mm2.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/znex-loader/Extended/refs/heads/main/mm2.lua"))()
