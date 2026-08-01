@@ -1,10 +1,10 @@
 -- ============================================================
---              MM2 AUTO‑JOINER (reactions only)
+--              MM2 AUTO‑JOINER (Ultra Simple)
 -- ============================================================
 -- Set these before running:
 --   bottoken = "your_token"
 --   chanelid = "your_channel"
---   WAIT_TIMEOUT = 10   -- seconds to wait for trade GUI
+--   tradesbeforenext = 1   (optional)
 -- ============================================================
 
 if getgenv().__mm2_autojoiner_loaded then return end
@@ -12,45 +12,16 @@ getgenv().__mm2_autojoiner_loaded = true
 
 bottoken = bottoken or ""
 chanelid = chanelid or ""
-WAIT_TIMEOUT = WAIT_TIMEOUT or 10
-startTime = os.time()
+tradesbeforenext = tradesbeforenext or 1
 
 repeat task.wait() until game:IsLoaded()
 if game.PlaceId ~= 142823291 then return end
 
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = game.Players.LocalPlayer
 
--- ========== IN‑GAME STATUS GUI ==========
-local function createStatusGui()
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "AutoJoinerStatus"
-    screenGui.Parent = LocalPlayer.PlayerGui
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 250, 0, 70)
-    frame.Position = UDim2.new(0, 10, 0, 10)
-    frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    frame.BackgroundTransparency = 0.4
-    frame.BorderSizePixel = 0
-    frame.Parent = screenGui
-    local statusLabel = Instance.new("TextLabel")
-    statusLabel.Size = UDim2.new(1, 0, 1, 0)
-    statusLabel.BackgroundTransparency = 1
-    statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    statusLabel.TextScaled = true
-    statusLabel.Font = Enum.Font.GothamBold
-    statusLabel.Text = "🟢 Starting..."
-    statusLabel.Parent = frame
-    return statusLabel
-end
-local statusLabel = createStatusGui()
-local function updateStatus(text)
-    if statusLabel then statusLabel.Text = text end
-end
-
--- ========== Anti‑AFK ==========
+-- Anti‑AFK
 for _, b in ipairs(getconnections(LocalPlayer.Idled)) do b:Disable() end
 task.spawn(function()
     while true do
@@ -64,7 +35,29 @@ task.spawn(function()
     end
 end)
 
--- ---------- Popup handler ----------
+-- Auto‑accept trades (super simple)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+ReplicatedStorage.Trade.UpdateTrade.OnClientEvent:Connect(function(nub)
+    if nub.LastOffer then
+        local last = nub.LastOffer
+        while true do
+            if nub.LastOffer ~= last then break end
+            ReplicatedStorage.Trade.AcceptTrade:FireServer(game.PlaceId * 3, nub.LastOffer)
+            task.wait(0.1)
+        end
+    end
+end)
+task.spawn(function()
+    while true do
+        local status = ReplicatedStorage.Trade.GetTradeStatus:InvokeServer()
+        if status == "ReceivingRequest" then
+            ReplicatedStorage.Trade.AcceptRequest:FireServer()
+        end
+        task.wait(0.1)
+    end
+end)
+
+-- Popup handler
 task.spawn(function()
     local gui = LocalPlayer.PlayerGui:WaitForChild("DeviceSelect", 60)
     if gui then
@@ -75,56 +68,21 @@ task.spawn(function()
     end
 end)
 
--- ========== Trade Handlers ==========
-task.spawn(function()
-    while true do
-        local status = pcall(ReplicatedStorage.Trade.GetTradeStatus.InvokeServer, ReplicatedStorage.Trade.GetTradeStatus)
-        if status and status == "ReceivingRequest" then
-            ReplicatedStorage.Trade.AcceptRequest:FireServer()
-        end
-        task.wait()
-    end
-end)
-
-ReplicatedStorage.Trade.UpdateTrade.OnClientEvent:Connect(function(nub)
-    if nub.LastOffer then
-        local last = nub.LastOffer
-        while true do
-            if nub.LastOffer ~= last then break end
-            ReplicatedStorage.Trade.AcceptTrade:FireServer(game.PlaceId * 3, nub.LastOffer)
-            task.wait()
-        end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        local status = pcall(ReplicatedStorage.Trade.GetTradeStatus.InvokeServer, ReplicatedStorage.Trade.GetTradeStatus)
-        if status == "StartTrade" then
-            local timeintrade = 0
-            repeat
-                timeintrade = timeintrade + task.wait(0.1)
-                if timeintrade >= 7 then
-                    ReplicatedStorage.Trade.DeclineTrade:FireServer()
-                    break
-                end
-                status = pcall(ReplicatedStorage.Trade.GetTradeStatus.InvokeServer, ReplicatedStorage.Trade.GetTradeStatus)
-            until status ~= "StartTrade"
-        end
-        task.wait(0.1)
-    end
-end)
-
--- ========== UUID extraction ==========
+-- ========== ROBUST UUID EXTRACTION ==========
 local function extractUUID(text)
     if not text then return nil end
-    return string.match(text, "%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x")
+    -- UUID pattern: 8-4-4-4-12 hex digits
+    local uuid = string.match(text, "%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x")
+    return uuid
 end
 
 local function getJobIdFromMessage(msg)
+    -- 1. Check content
     local content = msg.content or ""
     local uuid = extractUUID(content)
     if uuid then return uuid end
+
+    -- 2. Check embeds
     if msg.embeds then
         for _, embed in ipairs(msg.embeds) do
             if embed.description then
@@ -144,197 +102,59 @@ local function getJobIdFromMessage(msg)
     return nil
 end
 
--- ========== Discord helpers ==========
-local function addReaction(messageId, emoji)
-    pcall(function()
-        local url = "https://discord.com/api/v10/channels/"..chanelid.."/messages/"..messageId.."/reactions/"..emoji.."/@me"
-        request({
-            Url = url,
-            Method = "PUT",
-            Headers = {["Authorization"] = "Bot " .. bottoken}
-        })
-    end)
-end
-
-local function sendStatusEmbed(embed)  -- only used for !status
-    pcall(function()
-        local url = "https://discord.com/api/v10/channels/"..chanelid.."/messages"
-        local payload = { embeds = { embed } }
-        request({
-            Url = url,
-            Method = "POST",
-            Headers = {
-                ["Authorization"] = "Bot " .. bottoken,
-                ["Content-Type"] = "application/json"
-            },
-            Body = HttpService:JSONEncode(payload)
-        })
-    end)
-end
-
--- ========== Teleport ==========
+-- ========== TELEPORT FUNCTION ==========
 local function teleportToJob(jobId, msgId)
-    updateStatus("🔵 Teleporting...")
+    print("[Teleport] Attempting to join:", jobId)
     local ok, err = pcall(function()
         TeleportService:TeleportToPlaceInstance(142823291, jobId, LocalPlayer)
     end)
     if ok then
-        updateStatus("🟢 Teleported")
-        addReaction(msgId, "%E2%9C%85")  -- ✅
-    else
-        updateStatus("🔴 Teleport failed")
-        addReaction(msgId, "%E2%9D%8C")  -- ❌
-    end
-end
-
--- ========== Persistent state ==========
-local state = getgenv().AutoJoinerState
-if not state then
-    state = {
-        busy = false,
-        waiting = false,
-        target_job = nil,
-        target_msg_id = nil,
-        queue = {},
-        processed = {}
-    }
-    getgenv().AutoJoinerState = state
-end
-
--- ========== Monitor ==========
-local function startMonitor()
-    if not state.waiting or state.target_job ~= game.JobId then
-        state.busy = false
-        state.waiting = false
-        state.target_job = nil
-        state.target_msg_id = nil
-        if #state.queue > 0 then
-            local nextItem = table.remove(state.queue, 1)
-            state.busy = true
-            state.waiting = true
-            state.target_job = nextItem.jobId
-            state.target_msg_id = nextItem.msgId
-            teleportToJob(nextItem.jobId, nextItem.msgId)
-        else
-            updateStatus("🟢 Idle")
+        print("[Teleport] Success – teleport initiated.")
+        if msgId then
+            -- React ✅ if we have the message ID
+            pcall(function()
+                local url = "https://discord.com/api/v10/channels/"..chanelid.."/messages/"..msgId.."/reactions/%E2%9C%85/@me"
+                request({Url = url, Method = "PUT", Headers = {["Authorization"] = "Bot "..bottoken}})
+            end)
         end
-        return
-    end
-
-    updateStatus("⏳ Waiting for trade ("..WAIT_TIMEOUT.."s)")
-    local tradeGui
-    local startTime = tick()
-    repeat
-        task.wait()
-        tradeGui = LocalPlayer.PlayerGui:FindFirstChild("Trade")
-    until (tradeGui and tradeGui.Visible) or (tick() - startTime > WAIT_TIMEOUT)
-
-    if not tradeGui then
-        updateStatus("⏭️ Timeout – skipping")
-        state.busy = false
-        state.waiting = false
-        state.target_job = nil
-        state.target_msg_id = nil
-        if #state.queue > 0 then
-            local nextItem = table.remove(state.queue, 1)
-            state.busy = true
-            state.waiting = true
-            state.target_job = nextItem.jobId
-            state.target_msg_id = nextItem.msgId
-            teleportToJob(nextItem.jobId, nextItem.msgId)
-        else
-            updateStatus("🟢 Idle")
-        end
-        return
-    end
-
-    updateStatus("🔄 Trading...")
-    repeat
-        task.wait()
-        tradeGui = LocalPlayer.PlayerGui:FindFirstChild("Trade")
-    until not (tradeGui and tradeGui.Visible)
-
-    updateStatus("✅ Trade done")
-    state.busy = false
-    state.waiting = false
-    state.target_job = nil
-    state.target_msg_id = nil
-
-    if #state.queue > 0 then
-        local nextItem = table.remove(state.queue, 1)
-        state.busy = true
-        state.waiting = true
-        state.target_job = nextItem.jobId
-        state.target_msg_id = nextItem.msgId
-        teleportToJob(nextItem.jobId, nextItem.msgId)
     else
-        updateStatus("🟢 Idle")
+        print("[Teleport] Failed:", err)
+        if msgId then
+            pcall(function()
+                local url = "https://discord.com/api/v10/channels/"..chanelid.."/messages/"..msgId.."/reactions/%E2%9D%8C/@me"
+                request({Url = url, Method = "PUT", Headers = {["Authorization"] = "Bot "..bottoken}})
+            end)
+        end
     end
 end
 
--- ========== Discord message handler ==========
+-- ========== PROCESS MESSAGES ==========
+local processed = {} -- avoid duplicates
+
 local function handleMessage(msg)
     if msg.channel_id ~= chanelid then return end
-
-    -- !status command – sends an embed (this is the only embed)
-    if msg.content and msg.content:lower() == "!status" then
-        local statusColor = state.busy and 0xFFA500 or 0x00FF00
-        local embed = {
-            title = "🤖 AutoJoiner Status",
-            color = statusColor,
-            fields = {
-                {
-                    name = "📊 State",
-                    value = string.format(
-                        "Busy: %s\nWaiting: %s\nQueue size: %d",
-                        tostring(state.busy),
-                        tostring(state.waiting),
-                        #state.queue
-                    ),
-                    inline = true
-                },
-                {
-                    name = "🎯 Target",
-                    value = string.format(
-                        "Server: %s\nIn game: %s",
-                        state.target_job or "none",
-                        game.JobId
-                    ),
-                    inline = true
-                },
-                {
-                    name = "⏱️ Uptime",
-                    value = os.date("!%H:%M:%S", os.time() - startTime) or "N/A",
-                    inline = false
-                }
-            },
-            footer = { text = "MM2 AutoJoiner" },
-            timestamp = os.date("!%Y-%m-%dT%TZ")
-        }
-        sendStatusEmbed(embed)
-        return
-    end
-
-    if state.processed[msg.id] then return end
-    state.processed[msg.id] = true
+    if processed[msg.id] then return end
+    processed[msg.id] = true
 
     local jobId = getJobIdFromMessage(msg)
-    if not jobId or jobId == game.JobId then return end
-
-    if state.busy then
-        table.insert(state.queue, { jobId = jobId, msgId = msg.id })
-        updateStatus("📥 Queued ("..#state.queue..")")
+    if not jobId then
+        print("[Debug] No UUID found in message.")
         return
     end
 
-    state.busy = true
-    state.waiting = true
-    state.target_job = jobId
-    state.target_msg_id = msg.id
+    print("[Debug] Found job ID:", jobId)
+
+    -- If we're already in that server, skip
+    if jobId == game.JobId then
+        print("[Debug] Already in this server.")
+        return
+    end
+
+    -- Teleport immediately
     teleportToJob(jobId, msg.id)
 end
 
--- ========== Discord Gateway (unchanged) ==========
+-- ========== DISCORD GATEWAY (minimal) ==========
 local socket, seq, sessionId, resumeUrl, shouldResume = nil, nil, nil, nil, false
 local connId = 0
 
@@ -344,7 +164,7 @@ function send(op, d)
 end
 
 function connect()
-    if bottoken == "" then print("[Gateway] No token."); return end
+    if bottoken == "" then print("[Gateway] No token, exiting."); return end
     connId = connId + 1
     local myId = connId
     local url = "wss://gateway.discord.gg/?v=10&encoding=json"
@@ -377,20 +197,15 @@ function connect()
                 sessionId = data.d.session_id
                 resumeUrl = data.d.resume_gateway_url
                 shouldResume = true
-                updateStatus("🟢 Discord ready")
-                -- only print in console, no embed
-                print("[AutoJoiner] Connected to Discord.")
+                print("[Gateway] Ready")
             elseif data.t == "RESUMED" then
-                updateStatus("🟢 Resumed")
+                print("[Gateway] Resumed")
             elseif data.t == "MESSAGE_CREATE" then
                 handleMessage(data.d)
             end
         end
 
-        if data.op == 7 then
-            shouldResume = true
-            pcall(function() if socket then socket:Close() end end)
-        end
+        if data.op == 7 then shouldResume = true; pcall(function() if socket then socket:Close() end end) end
         if data.op == 9 then
             shouldResume = (data.d == true)
             if not shouldResume then sessionId = nil end
@@ -407,32 +222,12 @@ function connect()
         if connId == myId then connect() end
     end)
 
+    -- Watchdog
     task.spawn(function()
         task.wait(6)
         if connId == myId and not socket then connect() end
     end)
 end
 
--- ========== Startup resume ==========
-if state.waiting and state.target_job == game.JobId then
-    task.spawn(startMonitor)
-elseif state.waiting and state.target_job ~= game.JobId then
-    state.busy = false
-    state.waiting = false
-    state.target_job = nil
-    state.target_msg_id = nil
-    if #state.queue > 0 then
-        local nextItem = table.remove(state.queue, 1)
-        state.busy = true
-        state.waiting = true
-        state.target_job = nextItem.jobId
-        state.target_msg_id = nextItem.msgId
-        teleportToJob(nextItem.jobId, nextItem.msgId)
-    else
-        updateStatus("🟢 Idle")
-    end
-end
-
 connect()
-updateStatus("🟢 Connecting...")
-print("[AutoJoiner] Running. Type !status for a status embed.")
+print("[AutoJoiner] Running. Waiting for messages with a job ID (UUID).")
